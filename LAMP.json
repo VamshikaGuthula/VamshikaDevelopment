@@ -1,0 +1,846 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+
+  "Description" : "AWS CloudFormation Sample Template Rails_Multi_AZ: Create a highly available, scalable Ruby on Rails stack with a multi-AZ MySQL Amazon RDS database instance for the backend data store. This template demonstrates using the AWS CloudFormation bootstrap scripts to install the packages and files necessary to deploy a Rails application. **WARNING** This template creates one or more Amazon EC2 instances, an Application  Load Balancer and an Amazon RDS DB instance. You will be billed for the AWS resources used if you create a stack from this template.",
+
+  "Parameters" : {
+
+    "KeyName": {
+      "Description" : "Name of an existing EC2 KeyPair to enable SSH access to the instances",
+      "Type": "AWS::EC2::KeyPair::KeyName",
+      "ConstraintDescription" : "must be the name of an existing EC2 KeyPair."
+    },
+	
+	"OperatorEMail": {
+      "Description": "Email notification for scaling operations",
+	  "Default": "operator.email@gmail.com",
+      "Type": "String",
+      "AllowedPattern": "([a-zA-Z0-9_\\-\\.]+)@((\\[[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.)|(([a-zA-Z0-9\\-]+\\.)+))([a-zA-Z]{2,4}|[0-9]{1,3})(\\]?)",
+      "ConstraintDescription": "must be a valid email address."
+    },
+
+    "DBName": {
+      "Default": "DemoDatabase",
+      "Description" : "MySQL database name",
+      "Type": "String",
+      "MinLength": "1",
+      "MaxLength": "64",
+      "AllowedPattern" : "[a-zA-Z][a-zA-Z0-9]*",
+      "ConstraintDescription" : "must begin with a letter and contain only alphanumeric characters."
+    },
+
+    "DBUser": {
+      "NoEcho": "true",
+      "Description" : "Username for MySQL database access",
+      "Type": "String",
+      "MinLength": "1",
+      "MaxLength": "16",
+      "AllowedPattern" : "[a-zA-Z][a-zA-Z0-9]*",
+      "ConstraintDescription" : "must begin with a letter and contain only alphanumeric characters."
+    },
+
+    "DBPassword": {
+      "NoEcho": "true",
+      "Description" : "Password for MySQL database access",
+      "Type": "String",
+      "MinLength": "8",
+      "MaxLength": "41",
+      "AllowedPattern" : "[a-zA-Z0-9]*",
+      "ConstraintDescription" : "must contain only alphanumeric characters."
+    },
+
+    "DBAllocatedStorage": {
+      "Default": "128",
+      "Description" : "The size of the database (Gb)",
+      "Type": "Number",
+      "MinValue": "128",
+      "MaxValue": "1024",
+      "ConstraintDescription" : "must be between 128 and 1024Gb."
+    },
+
+    "DBInstanceClass": {
+      "Description" : "The database instance type",
+      "Type": "String",
+      "Default": "db.t2.micro",
+      "AllowedValues" : [ "db.t2.small", "db.m5.large", "db.t2.micro"],
+      "ConstraintDescription" : "must select a valid database instance type."
+    },
+
+    "MultiAZDatabase": {
+      "Default": "false",
+      "Description" : "Create a multi-AZ MySQL Amazon RDS database instance",
+      "Type": "String",
+      "AllowedValues" : [ "true", "false" ],
+      "ConstraintDescription" : "must be either true or false."
+    },
+	
+	"DeleteDBBkp": {
+		"Description" : "A value that indicates whether to remove automated backups immediately after the DB instance is deleted.",
+		"Default": "true",
+		"Type": "String",
+		"AllowedValues" : [ "true", "false" ],
+		"ConstraintDescription" : "must be either true or false."
+	},
+
+    "WebServerCapacity": {
+      "Default": "1",
+      "Description" : "The initial number of WebServer instances",
+      "Type": "Number",
+      "MinValue": "1",
+      "MaxValue": "3",
+      "ConstraintDescription" : "must be between 1 and 3 EC2 instances."
+    },
+	
+	"AppServerCapacity": {
+      "Default": "1",
+      "Description" : "The initial number of WebServer instances",
+      "Type": "Number",
+      "MinValue": "1",
+      "MaxValue": "4",
+      "ConstraintDescription" : "must be between 1 and 4 EC2 instances."
+    },
+
+    "InstanceType" : {
+      "Description" : "WebServer EC2 instance type",
+      "Type" : "String",
+      "Default" : "t2.micro",
+      "AllowedValues" : [ "m5a.large", "t2.nano", "t2.micro", "t2.small", "t2.medium", "t2.large"],
+      "ConstraintDescription" : "must be a valid EC2 instance type."
+    },
+
+    "SSHLocation" : {
+      "Description" : " The IP address range that can be used to SSH to the EC2 instances",
+      "Type": "String",
+      "MinLength": "9",
+      "MaxLength": "18",
+      "Default": "0.0.0.0/0",
+      "AllowedPattern": "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})",
+      "ConstraintDescription": "must be a valid IP CIDR range of the form x.x.x.x/x."
+    }
+  },
+
+  "Resources" : {
+  
+    "NotificationTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "Subscription": [ { "Endpoint": { "Ref": "OperatorEMail" }, "Protocol": "email" } ]
+      }
+    },
+  
+	"DemoVPC" : {
+	   "Type" : "AWS::EC2::VPC",
+	   "Properties" : {
+		  "CidrBlock" : "10.128.0.0/16",
+		  "EnableDnsSupport" : "true",
+		  "EnableDnsHostnames" : "true",
+		  "InstanceTenancy" : "default",
+		  "Tags" : [ {"Key" : "project", "Value" : "2"} ]
+	   }
+	},
+	"public1" : {
+	   "Type" : "AWS::EC2::Subnet",
+	   "Properties" : {
+		  "VpcId" : { "Ref" : "DemoVPC" },
+		  "CidrBlock" : "10.128.0.0/20",
+		  "AvailabilityZone" : "us-east-1a",
+		  "MapPublicIpOnLaunch" : "true"
+	   }
+	},
+	"public2" : {
+	   "Type" : "AWS::EC2::Subnet",
+	   "Properties" : {
+		  "VpcId" : { "Ref" : "DemoVPC" },
+		  "CidrBlock" : "10.128.16.0/20",
+		  "AvailabilityZone" : "us-east-1b",
+		  "MapPublicIpOnLaunch" : "true"
+	   }
+	},
+	"private1" : {
+	   "Type" : "AWS::EC2::Subnet",
+	   "Properties" : {
+		  "VpcId" : { "Ref" : "DemoVPC" },
+		  "CidrBlock" : "10.128.32.0/20",
+		  "AvailabilityZone" : "us-east-1c",
+		  "MapPublicIpOnLaunch" : "false"
+	   }
+	},
+	"private2" : {
+	   "Type" : "AWS::EC2::Subnet",
+	   "Properties" : {
+		  "VpcId" : { "Ref" : "DemoVPC" },
+		  "CidrBlock" : "10.128.48.0/20",
+		  "AvailabilityZone" : "us-east-1d",
+		  "MapPublicIpOnLaunch" : "false"
+	   }
+	},
+	"private3" : {
+	   "Type" : "AWS::EC2::Subnet",
+	   "Properties" : {
+		  "VpcId" : { "Ref" : "DemoVPC" },
+		  "CidrBlock" : "10.128.64.0/20",
+		  "AvailabilityZone" : "us-east-1e",
+		  "MapPublicIpOnLaunch" : "false"
+	   }
+	},
+	"private4" : {
+	   "Type" : "AWS::EC2::Subnet",
+	   "Properties" : {
+		  "VpcId" : { "Ref" : "DemoVPC" },
+		  "CidrBlock" : "10.128.80.0/20",
+		  "AvailabilityZone" : "us-east-1f",
+		  "MapPublicIpOnLaunch" : "false"
+	   }
+	},
+	"IGW" : {
+		"Type" : "AWS::EC2::InternetGateway",
+		"DependsOn" : "DemoVPC",
+		"Properties" : {
+			"Tags" : [ {"Key" : "project", "Value" : "2"}]
+		}
+    },
+	
+	"IGWAttach" : {
+		"Type" : "AWS::EC2::VPCGatewayAttachment",
+		"Properties" : {
+			"VpcId" : { 
+				"Ref" : "DemoVPC" 
+			},
+			"InternetGatewayId" : { 
+				"Ref" : "IGW" 
+			}
+		}
+	},
+	
+	"PublicRouteTable" : {
+		"Type" : "AWS::EC2::RouteTable",
+		"Properties" : {
+			"VpcId" : {"Ref" : "DemoVPC"}
+		}
+	},
+	
+	"DefaultPublicRoute" : {
+		"Type" : "AWS::EC2::Route",
+		"DependsOn" : "IGWAttach",
+		"Properties" : {
+			"RouteTableId" : {"Ref" : "PublicRouteTable"},
+			"DestinationCidrBlock" : "0.0.0.0/0",
+			"GatewayId" : {"Ref" : "IGW"}
+		}
+	},
+	
+	"Public1RouteTableAssociation" : {
+		"Type": "AWS::EC2::SubnetRouteTableAssociation",
+		"Properties": {
+		  "RouteTableId" : {"Ref" : "PublicRouteTable"},
+		  "SubnetId": {"Ref" : "public1"}
+		}
+	},
+	
+	"Public2RouteTableAssociation" : {
+		"Type": "AWS::EC2::SubnetRouteTableAssociation",
+		"Properties": {
+		  "RouteTableId" : {"Ref" : "PublicRouteTable"},
+		  "SubnetId": {"Ref" : "public2"}
+		}
+	},
+	
+	"PrivateRouteTable" : {
+		"Type" : "AWS::EC2::RouteTable",
+		"Properties" : {
+			"VpcId" : {"Ref" : "DemoVPC"}
+		}
+	},
+	
+	"Private1RouteTableAssociation" : {
+		"Type": "AWS::EC2::SubnetRouteTableAssociation",
+		"Properties": {
+		  "RouteTableId" : {"Ref" : "PrivateRouteTable"},
+		  "SubnetId": {"Ref" : "private1"}
+		}
+	},
+	
+	"Private2RouteTableAssociation" : {
+		"Type": "AWS::EC2::SubnetRouteTableAssociation",
+		"Properties": {
+		  "RouteTableId" : {"Ref" : "PrivateRouteTable"},
+		  "SubnetId": {"Ref" : "private2"}
+		}
+	},
+	
+	"Private3RouteTableAssociation" : {
+		"Type": "AWS::EC2::SubnetRouteTableAssociation",
+		"Properties": {
+		  "RouteTableId" : {"Ref" : "PrivateRouteTable"},
+		  "SubnetId": {"Ref" : "private3"}
+		}
+	},
+	
+	"Private4RouteTableAssociation" : {
+		"Type": "AWS::EC2::SubnetRouteTableAssociation",
+		"Properties": {
+		  "RouteTableId" : {"Ref" : "PrivateRouteTable"},
+		  "SubnetId": {"Ref" : "private4"}
+		}
+	},
+	
+	"PhpLoadbalancer" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::LoadBalancer",
+	  "DependsOn" : "IGWAttach",
+      "Properties" : {
+		"Name" : "PhpELB",
+        "Subnets" : [{ "Ref" : "public1"}, { "Ref" : "public2"}],
+		"SecurityGroups" : [{"Ref" : "PhpLBSecurityGrp"}]
+      }
+    },
+	
+	"AppLoadbalancer" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::LoadBalancer",
+	  "DependsOn" : "IGWAttach",
+      "Properties" : {
+		"Name" : "AppELB",
+        "Subnets" : [{ "Ref" : "private1"}, { "Ref" : "private2"},{ "Ref" : "private3"}, { "Ref" : "private4"}],
+		"Type" : "network",
+		"Scheme" : "internal"
+      }
+    },
+	
+	"myDNS" : {
+	  "Type" : "AWS::Route53::RecordSetGroup",
+	  "Properties" : {
+		"HostedZoneName" : "Demonetwork.com",
+		"Comment" : "My zone alias targeted to PhpELoadBalancer.",
+		"RecordSets" : [{
+		  "Name" : "Demonetwork.com.",
+		  "Type" : "A",
+		  "AliasTarget" : {
+		    "HostedZoneId" : { "Fn::GetAtt" : ["PhpLoadbalancer", "CanonicalHostedZoneID"] },
+	    	"DNSName" : { "Fn::GetAtt" : ["PhpLoadbalancer","DNSName"] }
+		    }
+		  },
+		 {"Name" : "www.demonetwork.com.",
+		  "Type" : "A",
+		  "AliasTarget" : {
+		    "HostedZoneId" : { "Fn::GetAtt" : ["PhpLoadbalancer", "CanonicalHostedZoneID"] },
+	    	"DNSName" : { "Fn::GetAtt" : ["PhpLoadbalancer","DNSName"] }
+		    }
+		 }
+		]
+	  }
+	},
+
+    "HTTPSlistener" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::Listener",
+	  "DependsOn" : "PhpLBTargetGroup",
+      "Properties" : {
+        "DefaultActions" : [{
+          "Type" : "forward",
+          "TargetGroupArn" : { "Ref" : "PhpLBTargetGroup" }
+        }],
+		"Certificates" : [{"CertificateArn" : "<Mention the certificate ARN>"}],
+        "LoadBalancerArn" : { "Ref" : "PhpLoadbalancer" },
+        "Port" : "443",
+        "Protocol" : "HTTPS",
+		"SslPolicy" : "ELBSecurityPolicy-2016-08"
+      }
+    },
+	
+	"HTTPlistener": {
+    "Type": "AWS::ElasticLoadBalancingV2::Listener",
+    "Properties": {
+        "DefaultActions": [
+            {
+                "Type": "redirect",
+                "RedirectConfig": {
+                    "Protocol": "HTTPS",
+                    "Port": "443",
+                    "Host": "#{host}",
+                    "Path": "/#{path}",
+                    "Query": "#{query}",
+                    "StatusCode": "HTTP_301"
+                }
+            }
+        ],
+        "LoadBalancerArn": {
+            "Ref": "PhpLoadbalancer"
+        },
+        "Port": 80,
+        "Protocol": "HTTP"
+    }
+	},
+	
+	"Applistener" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::Listener",
+	  "DependsOn" : "AppLBTargetGroup",
+      "Properties" : {
+        "DefaultActions" : [{
+          "Type" : "forward",
+          "TargetGroupArn" : { "Ref" : "AppLBTargetGroup" }
+        }],
+		"LoadBalancerArn" : { "Ref" : "AppLoadbalancer" },
+        "Port" : "8888",
+        "Protocol" : "TCP"
+      }
+    },
+
+    "PhpLBTargetGroup" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "Properties" : {
+		"Name" : "PhpLBTargetGroup",
+        "HealthCheckIntervalSeconds" : 10,
+        "HealthCheckTimeoutSeconds" : 5,
+        "HealthyThresholdCount" : 2,
+        "Port" : 80,
+        "Protocol" : "HTTP",
+        "UnhealthyThresholdCount" : 5,
+        "VpcId" : { "Ref" : "DemoVPC" },
+        "TargetGroupAttributes" :
+          [ { "Key" : "stickiness.enabled", "Value" : "true" },
+            { "Key" : "stickiness.type", "Value" : "lb_cookie" },
+            { "Key" : "stickiness.lb_cookie.duration_seconds", "Value" : "30" }
+        ]
+      }
+    },
+	
+	"AppLBTargetGroup" : {
+      "Type" : "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "Properties" : {
+		"Name" : "AppLBTargetGroup",
+        "Port" : 8888,
+        "Protocol" : "TCP",
+        "VpcId" : { "Ref" : "DemoVPC" }
+      }
+    },
+
+    "PhpSeverGrp" : {
+      "Type" : "AWS::AutoScaling::AutoScalingGroup",
+      "Properties" : {
+		"AutoScalingGroupName" : "PhpServerGrp",
+        "VPCZoneIdentifier" : [{ "Ref" : "public1"}, { "Ref" : "public2"}],
+        "LaunchConfigurationName" : { "Ref" : "PhpLaunchConfig" },
+        "MinSize" : "1",
+        "MaxSize" : "3",
+        "DesiredCapacity" : { "Ref" : "WebServerCapacity" },
+        "TargetGroupARNs" : [ { "Ref" : "PhpLBTargetGroup" } ],
+		"NotificationConfiguration" : {
+          "TopicARN" : { "Ref" : "NotificationTopic" },
+          "NotificationTypes" : [ "autoscaling:EC2_INSTANCE_LAUNCH",
+                                  "autoscaling:EC2_INSTANCE_LAUNCH_ERROR",
+                                  "autoscaling:EC2_INSTANCE_TERMINATE",
+                                  "autoscaling:EC2_INSTANCE_TERMINATE_ERROR"]
+        }
+      }
+    },
+	
+	"AppSeverGrp" : {
+      "Type" : "AWS::AutoScaling::AutoScalingGroup",
+      "Properties" : {
+		"AutoScalingGroupName" : "AppServerGrp",
+        "VPCZoneIdentifier" : [{ "Ref" : "private1"}, { "Ref" : "private2"},{ "Ref" : "private3"}, { "Ref" : "private4"}],
+        "LaunchConfigurationName" : { "Ref" : "AppLaunchConfig" },
+        "MinSize" : "1",
+        "MaxSize" : "4",
+        "DesiredCapacity" : { "Ref" : "AppServerCapacity" },
+        "TargetGroupARNs" : [ { "Ref" : "AppLBTargetGroup" } ],
+		"NotificationConfiguration" : {
+          "TopicARN" : { "Ref" : "NotificationTopic" },
+          "NotificationTypes" : [ "autoscaling:EC2_INSTANCE_LAUNCH",
+                                  "autoscaling:EC2_INSTANCE_LAUNCH_ERROR",
+                                  "autoscaling:EC2_INSTANCE_TERMINATE",
+                                  "autoscaling:EC2_INSTANCE_TERMINATE_ERROR"]
+        }
+      }
+    },
+	
+	"PhpLaunchConfig": {
+      "Type" : "AWS::AutoScaling::LaunchConfiguration",
+      "Metadata" : {
+                "AWS::CloudFormation::Init" : {
+          "config" : {
+            "packages" : {
+              "yum" : {
+                "httpd"     : [],
+                "php"       : []
+              }
+            },
+
+            "files" : {
+              "/etc/cfn/cfn-hup.conf" : {
+                "content" : { "Fn::Join" : ["", [
+                  "[main]\n",
+                  "stack=", { "Ref" : "AWS::StackId" }, "\n",
+                  "region=", { "Ref" : "AWS::Region" }, "\n"
+                ]]},
+                "mode"    : "000400",
+                "owner"   : "root",
+                "group"   : "root"
+              },
+
+              "/etc/cfn/hooks.d/cfn-auto-reloader.conf" : {
+                "content": { "Fn::Join" : ["", [
+                  "[cfn-auto-reloader-hook]\n",
+                  "triggers=post.update\n",
+                  "path=Resources.PhpLaunchConfig.Metadata.AWS::CloudFormation::Init\n",
+                  "action=/opt/aws/bin/cfn-init -v ",
+                  "         --stack ", { "Ref" : "AWS::StackName" },
+                  "         --resource PhpLaunchConfig ",
+                  "         --region ", { "Ref" : "AWS::Region" }, "\n",
+                  "runas=root\n"
+                ]]},
+                "mode"    : "000400",
+                "owner"   : "root",
+                "group"   : "root"
+              }
+            },
+
+            "services" : {
+              "sysvinit" : {
+                "httpd" : { "enabled" : "true", "ensureRunning" : "true" },
+                "cfn-hup" : { "enabled" : "true", "ensureRunning" : "true",
+                              "files" : ["/etc/cfn/cfn-hup.conf", "/etc/cfn/hooks.d/cfn-auto-reloader.conf"]}
+              }
+            },
+			"commands" : {
+				"test"  : {"command":"sudo aws s3 cp <s3 bucket address> /var/www/html/"},
+				"test2" : {"command":"sudo unzip /var/www/html/Sample.zip -d /var/www/html/"}
+			}
+          }
+        }
+      },
+      "Properties": {
+        "ImageId" : "<ImageID>",
+        "InstanceType"   : { "Ref" : "InstanceType" },
+        "SecurityGroups" : [ {"Ref" : "PhpServerSecurityGrp"} ],
+        "KeyName"        : { "Ref" : "KeyName" },
+		"IamInstanceProfile" : "<Instance Rule>",
+        "UserData"       : { "Fn::Base64" : { "Fn::Join" : ["", [
+          "#!/bin/bash -xe\n",
+          "yum update -y aws-cfn-bootstrap\n",
+		  "yum update -y\n",
+
+          "/opt/aws/bin/cfn-init -v ",
+          "         --stack ", { "Ref" : "AWS::StackId" },
+          "         --resource PhpLaunchConfig ",
+          "         --region ", { "Ref" : "AWS::Region" }, "\n",
+
+          "/opt/aws/bin/cfn-signal -e $? ",
+          "         --stack ", { "Ref" : "AWS::StackId" },
+          "         --resource PhpSeverGrp ",
+          "         --region ", { "Ref" : "AWS::Region" }, "\n"
+        ]]}}
+      }
+    },
+	
+	"AppLaunchConfig": {
+      "Type" : "AWS::AutoScaling::LaunchConfiguration",
+      "Metadata" : {
+        "AWS::CloudFormation::Init" : {
+          "configSets" : {
+            "full_install" : [ "install_cfn", "configure_mysql", "install_application"]
+          },
+
+          "install_cfn" : {
+            "files" : {
+              "/etc/cfn/cfn-hup.conf" : {
+                "content" : { "Fn::Join" : ["", [
+                  "[main]\n",
+                  "stack=", { "Ref" : "AWS::StackId" }, "\n",
+                  "region=", { "Ref" : "AWS::Region" }, "\n"
+                ]]},
+                "mode"    : "000400",
+                "owner"   : "root",
+                "group"   : "root"
+              },
+
+              "/etc/cfn/hooks.d/cfn-auto-reloader.conf" : {
+                "content": { "Fn::Join" : ["", [
+                  "[cfn-auto-reloader-hook]\n",
+                  "triggers=post.update\n",
+                  "path=Resources.AppLaunchConfig.Metadata.AWS::CloudFormation::Init\n",
+                  "action=/opt/aws/bin/cfn-init -v ",
+                  "         --stack ", { "Ref" : "AWS::StackName" },
+                  "         --resource AppLaunchConfig ",
+                  "         --configsets full_install ",
+                  "         --region ", { "Ref" : "AWS::Region" }, "\n",
+                  "runas=root\n"
+                ]]},
+				"mode"    : "000400",
+                "owner"   : "root",
+                "group"   : "root"
+              }
+            },
+
+            "services" : {
+              "sysvinit" : {
+                "cfn-hup" : { "enabled" : "true", "ensureRunning" : "true",
+                              "files" : ["/etc/cfn/cfn-hup.conf", "/etc/cfn/hooks.d/cfn-auto-reloader.conf"]}
+              }
+            }
+          },
+		  "configure_mysql" : {
+            "packages" : {
+              "yum" : {
+                "mysql"        : [],
+                "mysql-devel"  : [],
+                "mysql-libs"   : []
+              }
+            }
+          },
+		  "install_application" : {
+            "files" : {
+              "/tmp/database.yml" : {
+               "content" : { "Fn::Join" : ["", [
+                  "development:\n",
+                  "  adapter: mysql2\n",
+                  "  encoding: utf8\n",
+                  "  reconnect: false\n",
+                  "  pool: 5\n",
+				  "  database: ", { "Ref" : "DBName" }, "\n",
+                  "  username: ", { "Ref" : "DBUser" }, "\n",
+                  "  password: ", { "Ref" : "DBPassword" }, "\n",
+                  "  host: ", { "Fn::GetAtt": [ "MySQLDatabase", "Endpoint.Address" ] }, "\n",
+                  "  port: ", { "Fn::GetAtt": [ "MySQLDatabase", "Endpoint.Port" ] }, "\n"
+                ]]},
+                "mode"  : "000400",
+                "owner" : "root",
+                "group" : "root"
+              }
+			}
+		  }
+        }
+      },
+      "Properties": {
+        "ImageId" : "<ImageID>",
+        "InstanceType"   : { "Ref" : "InstanceType" },
+        "SecurityGroups" : [ {"Ref" : "AppServerSecurityGrp"} ],
+        "KeyName"        : { "Ref" : "KeyName" },
+		"IamInstanceProfile" : "<Instance Rule>",
+        "UserData"       : { "Fn::Base64" : { "Fn::Join" : ["", [
+          "#!/bin/bash -xe\n",
+          "yum update -y aws-cfn-bootstrap\n",
+		  "yum update -y\n",
+
+          "/opt/aws/bin/cfn-init -v ",
+          "         --stack ", { "Ref" : "AWS::StackId" },
+          "         --resource AppLaunchConfig ",
+          "         --configsets full_install ",
+          "         --region ", { "Ref" : "AWS::Region" }, "\n",
+
+          "/opt/aws/bin/cfn-signal -e $? ",
+          "         --stack ", { "Ref" : "AWS::StackId" },
+          "         --resource AppSeverGrp ",
+          "         --region ", { "Ref" : "AWS::Region" }, "\n"
+        ]]}}
+      }
+    },
+	
+	"WebServerScaleUpPolicy" : {
+      "Type" : "AWS::AutoScaling::ScalingPolicy",
+      "Properties" : {
+        "AdjustmentType" : "ChangeInCapacity",
+        "AutoScalingGroupName" : { "Ref" : "PhpSeverGrp" },
+        "Cooldown" : "60",
+        "ScalingAdjustment" : "1"
+      }
+    },
+	
+    "WebServerScaleDownPolicy" : {
+      "Type" : "AWS::AutoScaling::ScalingPolicy",
+      "Properties" : {
+        "AdjustmentType" : "ChangeInCapacity",
+        "AutoScalingGroupName" : { "Ref" : "PhpSeverGrp" },
+        "Cooldown" : "60",
+        "ScalingAdjustment" : "-1"
+      }
+    },
+	
+	"CPUAlarmHigh": {
+     "Type": "AWS::CloudWatch::Alarm",
+     "Properties": {
+        "AlarmDescription": "Scale-up if CPU > 70%",
+        "MetricName": "CPUUtilization",
+        "Namespace": "AWS/EC2",
+        "Statistic": "Average",
+        "Period": "300",
+        "EvaluationPeriods": "1",
+        "Threshold": "70",
+        "AlarmActions": [ { "Ref": "WebServerScaleUpPolicy" } ],
+        "Dimensions": [
+          {
+            "Name": "AutoScalingGroupName",
+            "Value": { "Ref": "PhpSeverGrp" }
+          }
+        ],
+        "ComparisonOperator": "GreaterThanThreshold"
+      }
+    },
+	
+    "CPUAlarmLow": {
+     "Type": "AWS::CloudWatch::Alarm",
+     "Properties": {
+        "AlarmDescription": "Scale-down if CPU < 40%",
+        "MetricName": "CPUUtilization",
+        "Namespace": "AWS/EC2",
+        "Statistic": "Average",
+        "Period": "300",
+        "EvaluationPeriods": "1",
+        "Threshold": "40",
+        "AlarmActions": [ { "Ref": "WebServerScaleDownPolicy" } ],
+        "Dimensions": [
+          {
+            "Name": "AutoScalingGroupName",
+            "Value": { "Ref": "PhpSeverGrp" }
+          }
+        ],
+        "ComparisonOperator": "LessThanThreshold"
+      }
+    },
+	
+	"AppServerScaleUpPolicy" : {
+      "Type" : "AWS::AutoScaling::ScalingPolicy",
+      "Properties" : {
+        "AdjustmentType" : "ChangeInCapacity",
+        "AutoScalingGroupName" : { "Ref" : "AppSeverGrp" },
+        "Cooldown" : "60",
+        "ScalingAdjustment" : "1"
+      }
+    },
+	
+    "AppServerScaleDownPolicy" : {
+      "Type" : "AWS::AutoScaling::ScalingPolicy",
+      "Properties" : {
+        "AdjustmentType" : "ChangeInCapacity",
+        "AutoScalingGroupName" : { "Ref" : "AppSeverGrp" },
+        "Cooldown" : "60",
+        "ScalingAdjustment" : "-1"
+      }
+    },
+
+    "AppCPUAlarmHigh": {
+     "Type": "AWS::CloudWatch::Alarm",
+     "Properties": {
+        "AlarmDescription": "Scale-up if CPU > 70%",
+        "MetricName": "CPUUtilization",
+        "Namespace": "AWS/EC2",
+        "Statistic": "Average",
+        "Period": "300",
+        "EvaluationPeriods": "1",
+        "Threshold": "70",
+        "AlarmActions": [ { "Ref": "AppServerScaleUpPolicy" } ],
+        "Dimensions": [
+          {
+            "Name": "AutoScalingGroupName",
+            "Value": { "Ref": "AppSeverGrp" }
+          }
+        ],
+        "ComparisonOperator": "GreaterThanThreshold"
+      }
+    },
+	
+    "AppCPUAlarmLow": {
+     "Type": "AWS::CloudWatch::Alarm",
+     "Properties": {
+        "AlarmDescription": "Scale-down if CPU < 40% ",
+        "MetricName": "CPUUtilization",
+        "Namespace": "AWS/EC2",
+        "Statistic": "Average",
+        "Period": "300",
+        "EvaluationPeriods": "1",
+        "Threshold": "40",
+        "AlarmActions": [ { "Ref": "AppServerScaleDownPolicy" } ],
+        "Dimensions": [
+          {
+            "Name": "AutoScalingGroupName",
+            "Value": { "Ref": "AppSeverGrp" }
+          }
+        ],
+        "ComparisonOperator": "LessThanThreshold"
+      }
+    },
+
+    "PhpServerSecurityGrp" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "GroupDescription" : "Enable HTTP access locked down to the PHP EC2 + SSH access",
+        "SecurityGroupIngress" : [
+          {"IpProtocol" : "tcp", "FromPort" : 80, "ToPort" : 80, "CidrIp" : { "Fn::GetAtt" : ["DemoVPC", "CidrBlock"] }},
+          {"IpProtocol" : "tcp", "FromPort" : 22, "ToPort" : 22, "CidrIp" : { "Ref" : "SSHLocation"}}
+        ],
+        "VpcId" : { "Ref" : "DemoVPC" }
+      }
+    },
+	
+	"PhpLBSecurityGrp" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "GroupDescription" : "Enable HTTPs access locked down to the load balancer + SSH access",
+        "SecurityGroupIngress" : [
+          {"IpProtocol" : "tcp", "FromPort" : 80, "ToPort" : 80, "CidrIp" : "0.0.0.0/0"},
+		  {"IpProtocol" : "tcp", "FromPort" : 443, "ToPort" : 443, "CidrIp" : "0.0.0.0/0"}
+        ],
+		"SecurityGroupEgress" :[
+		{"IpProtocol" : "tcp", "FromPort" : 80, "ToPort" : 80, "CidrIp" : { "Fn::GetAtt" : ["DemoVPC", "CidrBlock"] } }
+		],
+        "VpcId" : { "Ref" : "DemoVPC" }
+      }
+    },
+	
+	"AppServerSecurityGrp" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "GroupDescription" : "Enable HTTP access locked down to the PHP EC2 + SSH access",
+        "SecurityGroupIngress" : [
+          {"IpProtocol" : "tcp", "FromPort" : 8888, "ToPort" : 8888, "CidrIp" : { "Fn::GetAtt" : ["DemoVPC", "CidrBlock"]} },
+          {"IpProtocol" : "tcp", "FromPort" : 22, "ToPort" : 22, "CidrIp" : { "Ref" : "SSHLocation"}}
+        ],
+        "VpcId" : { "Ref" : "DemoVPC" }
+      }
+    },
+
+    "DBSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+		"GroupDescription" : "Allow RDS access from PHP server" ,
+        "SecurityGroupIngress" : [
+          {"IpProtocol" : "tcp", "FromPort" : 3306, "ToPort" : 3306, "CidrIp" : { "Fn::GetAtt" : ["DemoVPC", "CidrBlock"] } }
+        ],
+        "VpcId" : { "Ref" : "DemoVPC" }
+      }
+    },
+	
+	"DBSubnetGrp": {
+		"Type" : "AWS::RDS::DBSubnetGroup",
+		"Properties" : {
+			"DBSubnetGroupDescription": "Allowing the RDS in the below zones",
+                "SubnetIds": [ { "Ref" : "private1"}, { "Ref" : "private2"},{ "Ref" : "private3"}, { "Ref" : "private4"} ]
+		}
+	},
+
+    "MySQLDatabase": {
+      "Type": "AWS::RDS::DBInstance",
+	  "DependsOn" : "IGWAttach",
+      "Properties": {
+        "Engine" : "MySQL",
+		"EngineVersion" : "8.0.17",
+        "DBName" : { "Ref": "DBName" },
+        "MultiAZ" : { "Ref": "MultiAZDatabase" },
+		"BackupRetentionPeriod" : 15,
+		"DeleteAutomatedBackups" : { "Ref": "DeleteDBBkp" },
+        "MasterUsername": { "Ref": "DBUser" },
+        "MasterUserPassword": { "Ref" : "DBPassword" },
+        "DBInstanceClass": { "Ref" : "DBInstanceClass" },
+        "AllocatedStorage": { "Ref" : "DBAllocatedStorage" },
+		"DBSubnetGroupName" : { "Ref" : "DBSubnetGrp" },
+		"PubliclyAccessible" : "false",
+        "VPCSecurityGroups"  : [{ "Ref" : "DBSecurityGroup" }]
+      }
+    }
+  },
+
+  "Outputs" : {
+    "WebsiteURL" : {
+      "Value" : { "Fn::Join" : ["", ["http://", { "Fn::GetAtt" : [ "PhpLoadbalancer", "DNSName" ]}, "/notes" ]] },
+      "Description" : "URL for Ruby Rails application"
+    }
+  }
+}
